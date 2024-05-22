@@ -261,8 +261,14 @@ int ncat_listen()
        maxfds for the added by default listen and stdin sockets. */
     init_fdlist(&client_fdlist, sadd(o.conn_limit, num_listenaddrs + 1));
 
+    // logdebug("client_fdlist fdmax %d\n", client_fdlist.fdmax);
+    // logdebug("client_fdlist nfds %d\n", client_fdlist.nfds);
+    // for (i = 0; i < client_fdlist.nfds; i++) {
+    //   logdebug("client_fdlist fd[%d] %d\n", i, client_fdlist.fds[i].fd);
+    // }
+
     for (i = 0; i < NUM_LISTEN_ADDRS; i++)
-        listen_socket[i] = -1;
+      listen_socket[i] = -1;
 
     num_sockets = 0;
     for (i = 0; i < num_listenaddrs; i++) {
@@ -282,9 +288,21 @@ int ncat_listen()
             bye("Unable to open any listening sockets.");
     }
 
+    // logdebug("client_fdlist nfds %d\n", client_fdlist.nfds);
+
     add_fd(&client_fdlist, STDIN_FILENO);
 
+    // logdebug("client_fdlist fdmax %d\n", client_fdlist.fdmax);
+    // for (i = 0; i < client_fdlist.nfds; i++) {
+    //   logdebug("client_fdlist fd[%d] %d\n", i, client_fdlist.fds[i].fd);
+    // }
+
     init_fdlist(&broadcast_fdlist, o.conn_limit);
+
+    // logdebug("broadcast_fdlist fdmax %d\n", broadcast_fdlist.fdmax);
+    // for (i = 0; i < broadcast_fdlist.nfds; i++) {
+    //   logdebug("broadcast_fdlist fd[%d] %d\n", i, broadcast_fdlist.fds[i].fd);
+    // }
 
     if (o.idletimeout > 0)
         tvp = &tv;
@@ -293,7 +311,6 @@ int ncat_listen()
         /* We pass these temporary descriptor sets to fselect, since fselect
            modifies the sets it receives. */
         fd_set readfds = master_readfds, writefds = master_writefds;
-
 
         if (o.debug > 1)
             logdebug("selecting, fdmax %d\n", client_fdlist.fdmax);
@@ -304,17 +321,33 @@ int ncat_listen()
         if (o.idletimeout > 0)
             ms_to_timeval(tvp, o.idletimeout);
 
-        /* The idle timer should only be running when there are active connections */
-        if (get_conn_count())
-            fds_ready = fselect(client_fdlist.fdmax + 1, &readfds, &writefds, NULL, tvp);
-        else
-            fds_ready = fselect(client_fdlist.fdmax + 1, &readfds, &writefds, NULL, NULL);
+        int conn = get_conn_count();
 
-        if (o.debug > 1)
-            logdebug("select returned %d fds ready\n", fds_ready);
+        //logdebug("get conn %d\n", conn);
+
+        /* The idle timer should only be running when there are active
+         * connections */
+        if (conn) {
+            //  fds_ready = 1;
+
+            fds_ready = fselect(client_fdlist.fdmax + 1, &readfds, &writefds,
+                                NULL, tvp);
+
+          logdebug("1) fselect\n");
+        } else {
+            fds_ready = fselect(client_fdlist.fdmax + 1, &readfds, &writefds,
+                                NULL, NULL);
+          logdebug("2) fselect\n");
+        }
+
+            // logdebug("select returned %d fds ready\n", fds_ready);
 
         if (fds_ready == 0)
             bye("Idle timeout expired (%d ms).", o.idletimeout);
+
+        // for (i = 0; i < client_fdlist.nfds; i++) {
+        //   logdebug("client_fdlist fd[%d] %d\n", i, client_fdlist.fds[i].fd);
+        // }
 
         /* If client_fdlist.state increases, the list has changed and we
          * need to go over it again. */
@@ -323,16 +356,23 @@ restart_fd_loop:
         for (i = 0; i < client_fdlist.nfds && fds_ready > 0; i++) {
             struct fdinfo *fdi = &client_fdlist.fds[i];
             int cfd = fdi->fd;
+
+            //logdebug("i = %d, cfd = %d\n", i, cfd);
+
             /* If we saw an error, close this fd */
             if (fdi->lasterr != 0) {
                 close_fd(fdi, 0);
+                logdebug("saw error\n");
                 goto restart_fd_loop;
             }
             /* Loop through descriptors until there's something to read */
-            if (!checked_fd_isset(cfd, &readfds) && !checked_fd_isset(cfd, &writefds))
+              if (cfd == 0)
                 continue;
-
-            if (o.debug > 1)
+            //   if (!checked_fd_isset(cfd, &readfds) &&
+            //              !checked_fd_isset(cfd, &writefds)) {
+            //     continue;
+            //   }
+              if (o.debug > 1)
                 logdebug("fd %d is ready\n", cfd);
 
 #ifdef HAVE_OPENSSL
@@ -369,34 +409,42 @@ restart_fd_loop:
             } else
 #endif
             if (checked_fd_isset(cfd, &listen_fds)) {
-                /* we have a new connection request */
-                handle_connection(cfd, type, &listen_fds);
+                if (o.debug > 1)
+             logdebug("we have a new connection request\n");
+              /* we have a new connection request */
+              handle_connection(cfd, type, &listen_fds);
             } else if (cfd == STDIN_FILENO) {
-                if (o.broker) {
-                    read_and_broadcast(cfd);
-                } else {
-                    /* Read from stdin and write to all clients. */
-                    rc = read_stdin();
-                    if (rc == 0 && type == SOCK_STREAM) {
-                        if (o.proto != IPPROTO_TCP || (o.proto == IPPROTO_TCP && o.sendonly)) {
-                            /* There will be nothing more to send. If we're not
-                               receiving anything, we can quit here. */
-                            return 0;
-                        }
-                        if (!o.noshutdown) shutdown_sockets(SHUT_WR);
-                    }
-                    if (rc < 0)
-                        return 1;
+              if (o.broker) {
+                read_and_broadcast(cfd);
+              } else {
+                /* Read from stdin and write to all clients. */
+                rc = read_stdin();
+                if (o.debug > 1)
+                  logdebug("Read from stdin %d\n", rc);
+                if (rc == 0 && type == SOCK_STREAM) {
+                  if (o.proto != IPPROTO_TCP ||
+                      (o.proto == IPPROTO_TCP && o.sendonly)) {
+                    /* There will be nothing more to send. If we're not
+                       receiving anything, we can quit here. */
+                    return 0;
+                  }
+                  if (!o.noshutdown)
+                    shutdown_sockets(SHUT_WR);
                 }
+                if (rc < 0)
+                  return 1;
+              }
             } else if (!o.sendonly) {
-                if (o.broker) {
-                    read_and_broadcast(cfd);
-                } else {
-                    /* Read from a client and write to stdout. */
-                    rc = read_socket(cfd);
-                    if (rc <= 0 && !o.keepopen)
-                        return rc == 0 ? 0 : 1;
-                }
+              if (o.broker) {
+                read_and_broadcast(cfd);
+              } else {
+                /* Read from a client and write to stdout. */
+                rc = read_socket(cfd);
+                if (o.debug > 1)
+                logdebug("Read from a client and write to stdout %d\n", rc);
+                if (rc <= 0 && !o.keepopen)
+                  return rc == 0 ? 0 : 1;
+              }
             }
 
             fds_ready--;
@@ -410,14 +458,16 @@ restart_fd_loop:
                     close_fd(fdi, 0);
                     /* close_fd mucks with client_fdlist, so jump back and
                      * start the loop over */
+                    logdebug("Close fd at the end\n");
                     goto restart_fd_loop;
                 }
             }
         }
     }
+    logdebug("Out while loop\n");
 
     return 0;
-}
+    }
 
 /* Accept a connection on a listening socket. Allow or deny the connection.
    Fork a command if o.cmdexec is set. Otherwise, add the new socket to the
@@ -674,9 +724,11 @@ int read_socket(int recv_fd)
             /* return value can be 0 without meaning EOF in some cases such as SSL
              * renegotiations that require read/write socket operations but do not
              * have any application data. */
+            logdebug("At read_socket() n = %d fdn->lasterr = %d\n", n, fdn->lasterr);
             if(n == 0 && fdn->lasterr == 0) {
                 continue; /* Check pending */
             }
+            logdebug("Close fd at read_socket() n = %d fdn->lasterr = %d\n", n, fdn->lasterr);
             close_fd(fdn, n == 0);
             return n;
         }

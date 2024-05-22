@@ -207,6 +207,8 @@ void netexec(struct fdinfo *info, char *cmdexec)
         checked_fd_set(info->fd, &fds);
         checked_fd_set(child_stdout[0], &fds);
 
+        logdebug("FOOOOOO IN NETEXEC");
+
         r = fselect(maxfd + 1, &fds, NULL, NULL, NULL);
         if (r == -1) {
             if (errno == EINTR)
